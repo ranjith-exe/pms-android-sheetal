@@ -6,14 +6,19 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.WindowManager
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -22,17 +27,26 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.updateLayoutParams
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -45,6 +59,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refreshProgressBar: ProgressBar
 
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var cameraPhotoUri: Uri? = null
+
     private var webRtcManager: WebRTCManager? = null
     private var webRtcBridge: WebRTCBridge? = null
     private var deviceId: String = ""
@@ -67,22 +83,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Activity Result Launcher for File Chooser
+    // Activity Result Launcher for File Chooser / Camera capture
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val results = if (result.resultCode == RESULT_OK && result.data != null) {
+        val results: Array<Uri>? = if (result.resultCode == RESULT_OK) {
             val data = result.data
-            if (data?.clipData != null) {
+            if (data?.data != null) {
+                arrayOf(data.data!!)
+            } else if (data?.clipData != null) {
                 val count = data.clipData!!.itemCount
                 Array(count) { i -> data.clipData!!.getItemAt(i).uri }
-            } else if (data?.data != null) {
-                arrayOf(data.data!!)
+            } else if (cameraPhotoUri != null) {
+                arrayOf(cameraPhotoUri!!)
             } else null
         } else null
 
         filePathCallback?.onReceiveValue(results)
         filePathCallback = null
+        cameraPhotoUri = null
     }
 
     // Activity Result Launcher for standard runtime permissions
@@ -102,16 +121,50 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // Enable Chrome DevTools inspection (chrome://inspect)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+
+        // Hardware acceleration at the window level for smooth camera video rendering
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        )
+
+        enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
         myWeb = findViewById(R.id.myWeb)
         refreshProgressBar = findViewById(R.id.refreshProgressBar)
+        val mainContainer = findViewById<FrameLayout>(R.id.mainContainer)
+
+        // Set solid background colors to prevent transparent flash/glitches during resize/rotation
+        mainContainer.setBackgroundColor(Color.WHITE)
+        myWeb.setBackgroundColor(Color.WHITE)
+        myWeb.overScrollMode = View.OVER_SCROLL_NEVER
+        myWeb.isVerticalScrollBarEnabled = false
+        myWeb.isHorizontalScrollBarEnabled = false
+
+        ViewCompat.setOnApplyWindowInsetsListener(mainContainer) { _, insets ->
+            val systemBars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            refreshProgressBar.updateLayoutParams<FrameLayout.LayoutParams> {
+                topMargin = systemBars.top
+            }
+            // Padding so top buttons/video controls are never obscured
+            myWeb.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+
+        hideSystemBars()
 
         // Initialize persistent device ID
         deviceId = DeviceIdManager.getDeviceId(this)
         Log.d(TAG, "Persistent Device ID: $deviceId")
 
-        // Request runtime permissions
+        // Request runtime permissions (Camera, Microphone, Notifications)
         requestRequiredPermissions()
 
         // Configure WebView and JS Bridge
@@ -128,8 +181,11 @@ class MainActivity : AppCompatActivity() {
         // Enable Kiosk mode
         startKioskMode()
 
-        // Load primary URL
-        if (myWeb.url.isNullOrEmpty()) {
+        // Load primary URL or restore saved instance state
+        if (savedInstanceState != null) {
+            Log.d(TAG, "Restoring WebView state from savedInstanceState")
+            myWeb.restoreState(savedInstanceState)
+        } else if (myWeb.url.isNullOrEmpty()) {
             myWeb.loadUrl(TARGET_URL)
         }
 
@@ -152,6 +208,9 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.MODIFY_AUDIO_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.MODIFY_AUDIO_SETTINGS)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -165,19 +224,37 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     private fun configureWebView() {
+        myWeb.clipToPadding = false
+        myWeb.setBackgroundColor(Color.WHITE)
+
+        // LAYER_TYPE_NONE lets Chromium handle GPU surface composition dynamically
+        // without forcing extra view buffers that cause MediaTek GPU tile glitches.
+        myWeb.setLayerType(View.LAYER_TYPE_NONE, null)
+
         val webSettings = myWeb.settings
 
+        @Suppress("DEPRECATION")
+        webSettings.setRenderPriority(WebSettings.RenderPriority.HIGH)
         webSettings.javaScriptEnabled = true
         webSettings.domStorageEnabled = true
+        webSettings.databaseEnabled = true
+        webSettings.useWideViewPort = true
+        webSettings.loadWithOverviewMode = true
         webSettings.mediaPlaybackRequiresUserGesture = false
         webSettings.setSupportZoom(true)
         webSettings.builtInZoomControls = true
         webSettings.displayZoomControls = false
         webSettings.allowFileAccess = true
         webSettings.allowContentAccess = true
+        webSettings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        @Suppress("DEPRECATION")
+        webSettings.allowFileAccessFromFileURLs = true
+        @Suppress("DEPRECATION")
+        webSettings.allowUniversalAccessFromFileURLs = true
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            webSettings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            webSettings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
         val cookieManager = CookieManager.getInstance()
@@ -207,6 +284,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 refreshProgressBar.visibility = View.GONE
                 injectDeviceIdIfNeeded(url)
+                injectCameraGpuOptimizationCss(view)
             }
 
             override fun onReceivedError(view: WebView, errorCode: Int, description: String, failingUrl: String) {
@@ -226,10 +304,21 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                consoleMessage?.let {
+                    Log.d("WebViewConsole", "[${it.messageLevel()}] ${it.message()} -- From line ${it.lineNumber()} of ${it.sourceId()}")
+                }
+                return true
+            }
+
             override fun onPermissionRequest(request: PermissionRequest) {
+                Log.d(TAG, "WebChromeClient.onPermissionRequest triggered for resources: ${request.resources?.joinToString()}")
                 runOnUiThread {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    try {
                         request.grant(request.resources)
+                        Log.d(TAG, "Successfully granted WebView permission request.")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error granting WebView permission request", e)
                     }
                 }
             }
@@ -242,17 +331,61 @@ class MainActivity : AppCompatActivity() {
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
 
-                val intent = fileChooserParams.createIntent()
+                var captureIntent: Intent? = null
+                if (fileChooserParams.isCaptureEnabled || fileChooserParams.acceptTypes.any { it.contains("image") }) {
+                    val photoFile = try {
+                        val imageDir = File(cacheDir, "camera_photos")
+                        if (!imageDir.exists()) imageDir.mkdirs()
+                        File.createTempFile("photo_${System.currentTimeMillis()}", ".jpg", imageDir)
+                    } catch (e: Exception) { null }
+
+                    if (photoFile != null) {
+                        cameraPhotoUri = FileProvider.getUriForFile(
+                            this@MainActivity,
+                            "${packageName}.fileprovider",
+                            photoFile
+                        )
+                        captureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                            putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+                            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                    }
+                }
+
+                val contentSelectionIntent = fileChooserParams.createIntent()
+                val chooserIntent = Intent(Intent.ACTION_CHOOSER).apply {
+                    putExtra(Intent.EXTRA_INTENT, contentSelectionIntent)
+                    if (captureIntent != null) {
+                        putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(captureIntent))
+                    }
+                }
+
                 return try {
-                    fileChooserLauncher.launch(intent)
+                    fileChooserLauncher.launch(chooserIntent)
                     true
                 } catch (e: Exception) {
                     this@MainActivity.filePathCallback = null
-                    Toast.makeText(this@MainActivity, "Cannot open file chooser", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Cannot open camera or file chooser", Toast.LENGTH_SHORT).show()
                     false
                 }
             }
         }
+    }
+
+    private fun injectCameraGpuOptimizationCss(webView: WebView) {
+        val cssJs = """
+            (function() {
+                var style = document.getElementById('gpu_camera_fix');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'gpu_camera_fix';
+                    style.type = 'text/css';
+                    style.innerHTML = 'video, canvas { transform: translateZ(0) !important; -webkit-transform: translateZ(0) !important; backface-visibility: hidden !important; -webkit-backface-visibility: hidden !important; will-change: transform !important; }';
+                    (document.head || document.documentElement).appendChild(style);
+                }
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(cssJs, null)
     }
 
     private fun initializeWebRtc() {
@@ -366,7 +499,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun hideSystemBars() {
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        windowInsetsController.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+    }
+
     private fun startKioskMode() {
+        hideSystemBars()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             if (activityManager.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_NONE) {
@@ -379,7 +520,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @Deprecated("Deprecated in Java")
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            hideSystemBars()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("MissingSuperCall")
     override fun onBackPressed() {
         if (myWeb.canGoBack()) {
             myWeb.goBack()
@@ -395,6 +549,25 @@ class MainActivity : AppCompatActivity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        Log.d(TAG, "Saving WebView state in onSaveInstanceState")
+        myWeb.saveState(outState)
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        Log.d(TAG, "Restoring WebView state in onRestoreInstanceState")
+        myWeb.restoreState(savedInstanceState)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.d(TAG, "onConfigurationChanged triggered: orientation=${newConfig.orientation}")
+        hideSystemBars()
+        myWeb.invalidate()
     }
 
     override fun onDestroy() {

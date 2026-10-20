@@ -12,8 +12,8 @@ android {
         applicationId = "in.hashday.pms.sheetal"
         minSdk = 21
         targetSdk = 34
-        versionCode = 4
-        versionName = '3.1.0'
+        versionCode = 8
+        versionName = '8.0.0'
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -39,6 +39,12 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "app-v${variant.versionName}(${variant.versionCode})-${variant.buildType.name}.apk"
+        }
     }
 }
 

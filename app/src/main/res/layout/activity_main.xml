@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/mainContainer"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@android:color/white"
+    android:fitsSystemWindows="false"
     tools:context=".MainActivity">
 
     <!-- WebView taking full layout space -->
     <WebView
         android:id="@+id/myWeb"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:background="@android:color/white"
+        android:fitsSystemWindows="false" />
 
     <!-- Progress bar at top for loading and two-finger refresh indicator -->
     <ProgressBar
@@ -18,8 +22,8 @@
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
         android:layout_height="6dp"
-        android:layout_alignParentTop="true"
+        android:layout_gravity="top"
         android:indeterminate="true"
         android:visibility="gone" />
 
-</RelativeLayout>
+</FrameLayout>
