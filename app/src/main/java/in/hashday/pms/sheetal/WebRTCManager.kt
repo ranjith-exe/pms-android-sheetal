@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
 import android.util.Log
+import java.util.Collections
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -46,35 +47,52 @@ class WebRTCManager(
     private var videoTrack: VideoTrack? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
+    private val pendingIceCandidates = Collections.synchronizedList(mutableListOf<IceCandidate>())
+
     @Volatile
     private var isCapturing = false
 
     init {
-        try {
-            eglBase = EglBase.create()
-            val initializationOptions = PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions()
-            PeerConnectionFactory.initialize(initializationOptions)
+        ensureFactory()
+    }
 
-            val options = PeerConnectionFactory.Options()
-            peerConnectionFactory = PeerConnectionFactory.builder()
-                .setOptions(options)
-                .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase?.eglBaseContext, true, false)) // Disable H264 high profile for MediaTek compatibility
-                .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase?.eglBaseContext))
-                .createPeerConnectionFactory()
+    @Synchronized
+    private fun ensureFactory(): Boolean {
+        try {
+            if (eglBase == null) {
+                eglBase = EglBase.create()
+            }
+            if (peerConnectionFactory == null) {
+                val initializationOptions = PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions()
+                PeerConnectionFactory.initialize(initializationOptions)
+
+                val options = PeerConnectionFactory.Options()
+                peerConnectionFactory = PeerConnectionFactory.builder()
+                    .setOptions(options)
+                    .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase?.eglBaseContext, true, true))
+                    .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase?.eglBaseContext))
+                    .createPeerConnectionFactory()
+                Log.d(TAG, "PeerConnectionFactory initialized successfully")
+            }
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize WebRTC PeerConnectionFactory", e)
             listener.onError("WebRTC Initialization Error: ${e.message}")
+            return false
         }
     }
 
-    private var pendingRemoteOffer: String? = null
-    private val pendingIceCandidates = mutableListOf<IceCandidate>()
-
     fun startScreenCapture(permissionIntent: Intent) {
-        if (isCapturing) {
-            Log.w(TAG, "Screen capture is already active")
+        if (isCapturing && videoTrack != null) {
+            Log.w(TAG, "Screen capture is already active with valid videoTrack")
+            return
+        }
+
+        if (!ensureFactory()) {
+            Log.e(TAG, "PeerConnectionFactory could not be initialized")
+            listener.onError("PeerConnectionFactory not initialized")
             return
         }
 
@@ -85,6 +103,14 @@ class WebRTCManager(
         }
 
         try {
+            // Clean up any stale capturer/source before starting
+            try {
+                videoCapturer?.stopCapture()
+                videoCapturer?.dispose()
+                videoSource?.dispose()
+                surfaceTextureHelper?.dispose()
+            } catch (ignored: Exception) {}
+
             val projectionCallback = object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.d(TAG, "MediaProjection onStop called by system")
@@ -107,42 +133,18 @@ class WebRTCManager(
             )
 
             val displayMetrics = context.resources.displayMetrics
-            var targetWidth = displayMetrics.widthPixels
-            var targetHeight = displayMetrics.heightPixels
+            val width = if (displayMetrics.widthPixels > 0) displayMetrics.widthPixels else 1280
+            val height = if (displayMetrics.heightPixels > 0) displayMetrics.heightPixels else 720
 
-            // Limit max resolution to 720p equivalent to avoid Helio G85 encoder starvation
-            if (targetWidth > 1280 || targetHeight > 1280) {
-                val ratio = targetWidth.toFloat() / targetHeight.toFloat()
-                if (targetWidth > targetHeight) {
-                    targetWidth = 1280
-                    targetHeight = (1280 / ratio).toInt()
-                } else {
-                    targetHeight = 1280
-                    targetWidth = (1280 * ratio).toInt()
-                }
-            }
-
-            // Ensure 16-pixel alignment for MediaTek hardware encoders
-            targetWidth = (targetWidth / 16) * 16
-            targetHeight = (targetHeight / 16) * 16
-
-            if (targetWidth == 0) targetWidth = 1280
-            if (targetHeight == 0) targetHeight = 720
-
-            capturer.startCapture(targetWidth, targetHeight, 20)
+            capturer.startCapture(width, height, 30)
 
             val track = factory.createVideoTrack("ARDAMSv0", source)
+            track.setEnabled(true)
             videoTrack = track
 
-            createPeerConnection()
             isCapturing = true
-            Log.d(TAG, "Screen capture started at ${targetWidth}x${targetHeight} @ 20fps")
-            
-            pendingRemoteOffer?.let { offer ->
-                Log.d(TAG, "Processing queued remote offer after capture start")
-                pendingRemoteOffer = null
-                processRemoteOffer(offer)
-            }
+            createPeerConnection()
+            Log.d(TAG, "Screen capture started at ${width}x${height} @ 30fps")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting screen capture", e)
             listener.onError("Screen capture failed: ${e.message}")
@@ -151,15 +153,17 @@ class WebRTCManager(
     }
 
     private fun createPeerConnection() {
+        if (!ensureFactory()) return
         val factory: PeerConnectionFactory = peerConnectionFactory ?: return
 
-        if (peerConnection != null) {
-            val currentTrack = videoTrack
-            if (currentTrack != null && peerConnection!!.senders.none { it.track()?.id() == currentTrack.id() }) {
-                peerConnection?.addTrack(currentTrack, listOf("ARDAMS"))
-            }
-            return
+        // Clean up previous peer connection if any
+        try {
+            peerConnection?.close()
+            peerConnection?.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error disposing previous peerConnection: ${e.message}")
         }
+        peerConnection = null
 
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
@@ -169,6 +173,7 @@ class WebRTCManager(
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
         peerConnection = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
@@ -206,40 +211,36 @@ class WebRTCManager(
         val currentTrack = videoTrack
         if (currentTrack != null) {
             peerConnection?.addTrack(currentTrack, listOf("ARDAMS"))
+            Log.d(TAG, "Attached videoTrack to PeerConnection")
+        } else {
+            Log.w(TAG, "videoTrack is null in createPeerConnection")
         }
     }
 
     fun handleRemoteOffer(sdpString: String) {
-        if (!isCapturing) {
-            Log.d(TAG, "Screen capture not yet active, queuing remote offer")
-            pendingRemoteOffer = sdpString
-            return
-        }
-        processRemoteOffer(sdpString)
-    }
+        Log.d(TAG, "handleRemoteOffer received SDP offer, creating fresh PeerConnection session")
 
-    private fun processRemoteOffer(sdpString: String) {
-        val pc = peerConnection
-        if (pc == null) {
-            Log.e(TAG, "PeerConnection is null, creating before applying offer")
-            createPeerConnection()
+        // Fresh session setup: clear pending ICE and create fresh PeerConnection
+        pendingIceCandidates.clear()
+        createPeerConnection()
+
+        val pc = peerConnection ?: run {
+            Log.e(TAG, "PeerConnection is null in handleRemoteOffer")
+            listener.onError("PeerConnection creation failed")
+            return
         }
 
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdpString)
-        peerConnection?.setRemoteDescription(object : SdpObserver {
+        pc.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {}
             override fun onSetSuccess() {
-                Log.d(TAG, "Remote OFFER set successfully. Creating ANSWER...")
+                Log.d(TAG, "Remote OFFER set successfully. Flushing pending ICE candidates and creating ANSWER...")
+                flushPendingIceCandidates()
                 createAnswer()
-                
-                pendingIceCandidates.forEach { candidate ->
-                    peerConnection?.addIceCandidate(candidate)
-                }
-                pendingIceCandidates.clear()
             }
 
             override fun onCreateFailure(error: String?) {
-                Log.e(TAG, "Failed to create remote description: $error")
+                Log.e(TAG, "Failed to set remote description: $error")
                 listener.onError("Set Remote Offer Failure: $error")
             }
 
@@ -248,6 +249,23 @@ class WebRTCManager(
                 listener.onError("Set Remote Offer Failure: $error")
             }
         }, sessionDescription)
+    }
+
+    private fun flushPendingIceCandidates() {
+        synchronized(pendingIceCandidates) {
+            val pc = peerConnection
+            if (pc != null) {
+                for (candidate in pendingIceCandidates) {
+                    try {
+                        pc.addIceCandidate(candidate)
+                        Log.d(TAG, "Flushed queued remote ICE candidate: ${candidate.sdpMid}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error adding queued ICE candidate: ${e.message}")
+                    }
+                }
+            }
+            pendingIceCandidates.clear()
+        }
     }
 
     private fun createAnswer() {
@@ -267,7 +285,7 @@ class WebRTCManager(
                         }
 
                         override fun onCreateFailure(e: String?) {
-                            Log.e(TAG, "Failed to create local description: $e")
+                            Log.e(TAG, "Failed to set local description: $e")
                         }
 
                         override fun onSetFailure(e: String?) {
@@ -291,19 +309,20 @@ class WebRTCManager(
 
     fun addRemoteIceCandidate(sdpMid: String, sdpMLineIndex: Int, sdpCandidate: String) {
         val candidate = IceCandidate(sdpMid, sdpMLineIndex, sdpCandidate)
-        if (peerConnection == null || peerConnection?.remoteDescription == null) {
-            pendingIceCandidates.add(candidate)
-            Log.d(TAG, "Queued remote ICE candidate: $sdpMid")
+        val pc = peerConnection
+        if (pc != null && pc.remoteDescription != null) {
+            pc.addIceCandidate(candidate)
+            Log.d(TAG, "Added remote ICE candidate immediately: $sdpMid")
         } else {
-            peerConnection?.addIceCandidate(candidate)
-            Log.d(TAG, "Added remote ICE candidate: $sdpMid")
+            Log.d(TAG, "Queued remote ICE candidate (remoteDescription not set yet): $sdpMid")
+            pendingIceCandidates.add(candidate)
         }
     }
 
     fun isScreenCapturing(): Boolean = isCapturing
 
     fun stop() {
-        Log.d(TAG, "Stopping WebRTC session and disposing resources...")
+        Log.d(TAG, "Stopping WebRTC session and disposing connection resources...")
         isCapturing = false
         try {
             videoCapturer?.stopCapture()
@@ -317,8 +336,8 @@ class WebRTCManager(
             surfaceTextureHelper?.dispose()
             peerConnection?.close()
             peerConnection?.dispose()
-            peerConnectionFactory?.dispose()
-            eglBase?.release()
+            // NOTE: Do NOT dispose peerConnectionFactory or eglBase here!
+            // Keeping them alive allows subsequent screen share sessions to start immediately without recreating factories.
         } catch (e: Exception) {
             Log.e(TAG, "Error during WebRTC cleanup", e)
         } finally {
@@ -327,6 +346,19 @@ class WebRTCManager(
             videoTrack = null
             surfaceTextureHelper = null
             peerConnection = null
+            pendingIceCandidates.clear()
+        }
+    }
+
+    fun destroy() {
+        Log.d(TAG, "Destroying WebRTCManager completely...")
+        stop()
+        try {
+            peerConnectionFactory?.dispose()
+            eglBase?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing factory/eglBase: ${e.message}")
+        } finally {
             peerConnectionFactory = null
             eglBase = null
         }

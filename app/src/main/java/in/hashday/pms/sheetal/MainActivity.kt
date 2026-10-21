@@ -71,14 +71,15 @@ class MainActivity : AppCompatActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isScreenCaptureIntentLaunched = false
         // Resume Kiosk Mode since it was temporarily suspended for the consent dialog
         startKioskMode()
 
         if (result.resultCode == RESULT_OK && result.data != null) {
             Log.d(TAG, "MediaProjection consent granted by user")
             ScreenCaptureService.startService(this)
-
-            // Allow foreground service to initialize on Android 14 before starting capture
+            
+            // Wait briefly to allow foreground service to register before starting projection
             myWeb.postDelayed({
                 webRtcManager?.startScreenCapture(result.data!!)
                 webRtcBridge?.sendStateToJs("CAPTURING")
@@ -434,15 +435,29 @@ class MainActivity : AppCompatActivity() {
         myWeb.addJavascriptInterface(webRtcBridge!!, "AndroidBridge") // Backward compatibility
     }
 
+    private var isScreenCaptureIntentLaunched = false
+
     private fun requestScreenCaptureConsent() {
         if (webRtcManager?.isScreenCapturing() == true) {
-            Log.d(TAG, "Screen capture is already active, notifying CAPTURING state directly")
+            Log.d(TAG, "Screen capture already active! Reusing session and notifying JS CAPTURING")
             webRtcBridge?.sendStateToJs("CAPTURING")
             return
         }
+        if (isScreenCaptureIntentLaunched) {
+            Log.d(TAG, "Screen capture intent is already active, ignoring duplicate request.")
+            return
+        }
+        
         Log.d(TAG, "Requesting MediaProjection screen capture consent")
+        isScreenCaptureIntentLaunched = true
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val consentIntent = projectionManager.createScreenCaptureIntent()
+        
+        val consentIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val config = android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay()
+            projectionManager.createScreenCaptureIntent(config)
+        } else {
+            projectionManager.createScreenCaptureIntent()
+        }
 
         // Temporarily suspend LockTask mode so the system permission dialog can appear over Kiosk Mode
         try {
@@ -593,7 +608,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        stopScreenCaptureSession()
+        webRtcManager?.destroy()
+        ScreenCaptureService.stopService(this)
         super.onDestroy()
     }
 }
