@@ -71,6 +71,9 @@ class MainActivity : AppCompatActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        // Resume Kiosk Mode since it was temporarily suspended for the consent dialog
+        startKioskMode()
+
         if (result.resultCode == RESULT_OK && result.data != null) {
             Log.d(TAG, "MediaProjection consent granted by user")
             ScreenCaptureService.startService(this)
@@ -440,6 +443,16 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "Requesting MediaProjection screen capture consent")
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val consentIntent = projectionManager.createScreenCaptureIntent()
+
+        // Temporarily suspend LockTask mode so the system permission dialog can appear over Kiosk Mode
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                stopLockTask()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not suspend LockTask mode: ${e.message}")
+        }
+
         screenCaptureLauncher.launch(consentIntent)
     }
 

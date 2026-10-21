@@ -81,7 +81,8 @@ class WebRTCBridge(
             put("type", "answer")
             put("sdp", sdp.description)
         }
-        val jsCall = "if (window.onAndroidWebRTCAnswer) { window.onAndroidWebRTCAnswer($json); } else { window.dispatchEvent(new CustomEvent('android_webrtc_answer', { detail: $json })); }"
+        val base64Json = android.util.Base64.encodeToString(json.toString().toByteArray(), android.util.Base64.NO_WRAP)
+        val jsCall = "var data = JSON.parse(atob('$base64Json')); if (window.onAndroidWebRTCAnswer) { window.onAndroidWebRTCAnswer(data); } else { window.dispatchEvent(new CustomEvent('android_webrtc_answer', { detail: data })); }"
         webView.post {
             webView.evaluateJavascript(jsCall, null)
         }
@@ -94,7 +95,8 @@ class WebRTCBridge(
             put("sdpMLineIndex", candidate.sdpMLineIndex)
             put("candidate", candidate.sdp)
         }
-        val jsCall = "if (window.onAndroidWebRTCIceCandidate) { window.onAndroidWebRTCIceCandidate($json); } else { window.dispatchEvent(new CustomEvent('android_webrtc_candidate', { detail: $json })); }"
+        val base64Json = android.util.Base64.encodeToString(json.toString().toByteArray(), android.util.Base64.NO_WRAP)
+        val jsCall = "var data = JSON.parse(atob('$base64Json')); if (window.onAndroidWebRTCIceCandidate) { window.onAndroidWebRTCIceCandidate(data); } else { window.dispatchEvent(new CustomEvent('android_webrtc_candidate', { detail: data })); }"
         webView.post {
             webView.evaluateJavascript(jsCall, null)
         }
@@ -105,7 +107,8 @@ class WebRTCBridge(
             put("type", "state")
             put("state", state)
         }
-        val jsCall = "if (window.onAndroidWebRTCState) { window.onAndroidWebRTCState($json); } else { window.dispatchEvent(new CustomEvent('android_webrtc_state', { detail: $json })); }"
+        val base64Json = android.util.Base64.encodeToString(json.toString().toByteArray(), android.util.Base64.NO_WRAP)
+        val jsCall = "var data = JSON.parse(atob('$base64Json')); if (window.onAndroidWebRTCState) { window.onAndroidWebRTCState(data); } else { window.dispatchEvent(new CustomEvent('android_webrtc_state', { detail: data })); }"
         webView.post {
             webView.evaluateJavascript(jsCall, null)
         }
