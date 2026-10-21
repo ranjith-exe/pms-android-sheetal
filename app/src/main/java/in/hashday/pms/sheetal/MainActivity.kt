@@ -74,8 +74,12 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK && result.data != null) {
             Log.d(TAG, "MediaProjection consent granted by user")
             ScreenCaptureService.startService(this)
-            webRtcManager?.startScreenCapture(result.data!!)
-            webRtcBridge?.sendStateToJs("CAPTURING")
+
+            // Allow foreground service to initialize on Android 14 before starting capture
+            myWeb.postDelayed({
+                webRtcManager?.startScreenCapture(result.data!!)
+                webRtcBridge?.sendStateToJs("CAPTURING")
+            }, 150)
         } else {
             Log.w(TAG, "MediaProjection consent denied or cancelled by user")
             Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
@@ -428,6 +432,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestScreenCaptureConsent() {
+        if (webRtcManager?.isScreenCapturing() == true) {
+            Log.d(TAG, "Screen capture is already active, notifying CAPTURING state directly")
+            webRtcBridge?.sendStateToJs("CAPTURING")
+            return
+        }
         Log.d(TAG, "Requesting MediaProjection screen capture consent")
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val consentIntent = projectionManager.createScreenCaptureIntent()

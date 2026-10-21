@@ -12,8 +12,8 @@ android {
         applicationId = "in.hashday.pms.sheetal"
         minSdk = 21
         targetSdk = 34
-        versionCode = 8
-        versionName = '8.0.0'
+        versionCode = 9
+        versionName = '9.0.0'
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -21,10 +21,13 @@ android {
         debug {
             debuggable = true
             minifyEnabled = false
+            signingConfig signingConfigs.debug
         }
         release {
             debuggable = false
-            minifyEnabled = true
+            minifyEnabled = false
+            signingConfig signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 

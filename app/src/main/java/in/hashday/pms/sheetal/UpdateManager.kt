@@ -353,9 +353,14 @@ object UpdateManager {
         val packageInstaller = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(context.packageName)
+        params.setSize(apkFile.length())
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            try {
+                params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to set USER_ACTION_NOT_REQUIRED: ${e.message}")
+            }
         }
 
         val sessionId = packageInstaller.createSession(params)
