@@ -12,7 +12,8 @@ class WebRTCBridge(
     private val onRequestScreenShare: () -> Unit,
     private val onStopScreenShare: () -> Unit,
     private val onSendOffer: (String) -> Unit,
-    private val onSendIceCandidate: (String, Int, String) -> Unit
+    private val onSendIceCandidate: (String, Int, String) -> Unit,
+    private val onForceRestart: () -> Unit
 ) {
 
     companion object {
@@ -25,6 +26,14 @@ class WebRTCBridge(
         Log.d(TAG, "JS called requestScreenShare()")
         webView.post {
             onRequestScreenShare()
+        }
+    }
+
+    @JavascriptInterface
+    fun forceAppRestart() {
+        Log.d(TAG, "JS requested application force restart")
+        webView.post {
+            onForceRestart()
         }
     }
 

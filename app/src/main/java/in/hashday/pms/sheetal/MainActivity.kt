@@ -2,7 +2,6 @@ package `in`.hashday.pms.sheetal
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -16,6 +15,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.webkit.ConsoleMessage
@@ -66,14 +66,14 @@ class MainActivity : AppCompatActivity() {
     private var deviceId: String = ""
 
     private var hasInitialized = false
+    private var isScreenCaptureIntentLaunched = false
+    private var twoFingerGesture: TwoFingerRefreshGesture? = null
 
     // Activity Result Launcher for MediaProjection screen capture consent
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         isScreenCaptureIntentLaunched = false
-        // Resume Kiosk Mode since it was temporarily suspended for the consent dialog
-        startKioskMode()
 
         if (result.resultCode == RESULT_OK && result.data != null) {
             Log.d(TAG, "MediaProjection consent granted by user")
@@ -85,9 +85,19 @@ class MainActivity : AppCompatActivity() {
                 webRtcBridge?.sendStateToJs("CAPTURING")
             }, 150)
         } else {
-            Log.w(TAG, "MediaProjection consent denied or cancelled by user")
-            Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
-            webRtcBridge?.sendStateToJs("DENIED")
+            Log.w(TAG, "MediaProjection consent denied or cancelled by system/user. Debouncing...")
+            
+            // DEBOUNCE FIX: Android's LockTask transition fires a phantom RESULT_CANCELED just milliseconds 
+            // before the real RESULT_OK arrives. We wait 500ms before declaring it actually denied.
+            myWeb.postDelayed({
+                if (webRtcManager?.isScreenCapturing() != true) {
+                    Log.e(TAG, "Screen capture was definitively denied.")
+                    Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
+                    webRtcBridge?.sendStateToJs("DENIED")
+                } else {
+                    Log.d(TAG, "Ghost cancellation ignored. Screen capture is active.")
+                }
+            }, 500)
         }
     }
 
@@ -154,15 +164,15 @@ class MainActivity : AppCompatActivity() {
         myWeb.isVerticalScrollBarEnabled = false
         myWeb.isHorizontalScrollBarEnabled = false
 
-        ViewCompat.setOnApplyWindowInsetsListener(mainContainer) { _, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(mainContainer) { view, insets ->
             val systemBars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
             refreshProgressBar.updateLayoutParams<FrameLayout.LayoutParams> {
                 topMargin = systemBars.top
             }
-            // Padding so top buttons/video controls are never obscured
-            myWeb.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            // Apply padding to the wrapper container instead of myWeb directly
+            view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
 
@@ -207,6 +217,15 @@ class MainActivity : AppCompatActivity() {
         startKioskMode()
     }
 
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        try {
+            ev?.let { twoFingerGesture?.observe(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in twoFingerGesture observe: ${e.message}")
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     private fun requestRequiredPermissions() {
         val permissionsToRequest = mutableListOf<String>()
 
@@ -232,17 +251,11 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     private fun configureWebView() {
-        myWeb.clipToPadding = false
+        myWeb.clipToPadding = true
         myWeb.setBackgroundColor(Color.WHITE)
-
-        // LAYER_TYPE_NONE lets Chromium handle GPU surface composition dynamically
-        // without forcing extra view buffers that cause MediaTek GPU tile glitches.
-        myWeb.setLayerType(View.LAYER_TYPE_NONE, null)
 
         val webSettings = myWeb.settings
 
-        @Suppress("DEPRECATION")
-        webSettings.setRenderPriority(WebSettings.RenderPriority.HIGH)
         webSettings.javaScriptEnabled = true
         webSettings.domStorageEnabled = true
         webSettings.databaseEnabled = true
@@ -285,6 +298,17 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
 
+            // Detects the "White Screen of Death" (WebView Out-of-Memory / Renderer Crash)
+            // and automatically self-heals by restarting the Activity.
+            override fun onRenderProcessGone(
+                view: WebView,
+                detail: android.webkit.RenderProcessGoneDetail
+            ): Boolean {
+                Log.e(TAG, "WebView Renderer crashed! (OOM or WebGL issue). Forcing hard process restart...")
+                hardRestartApp()
+                return true
+            }
+
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 refreshProgressBar.visibility = View.VISIBLE
             }
@@ -292,7 +316,6 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 refreshProgressBar.visibility = View.GONE
                 injectDeviceIdIfNeeded(url)
-                injectCameraGpuOptimizationCss(view)
             }
 
             override fun onReceivedError(view: WebView, errorCode: Int, description: String, failingUrl: String) {
@@ -380,22 +403,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun injectCameraGpuOptimizationCss(webView: WebView) {
-        val cssJs = """
-            (function() {
-                var style = document.getElementById('gpu_camera_fix');
-                if (!style) {
-                    style = document.createElement('style');
-                    style.id = 'gpu_camera_fix';
-                    style.type = 'text/css';
-                    style.innerHTML = 'video, canvas { transform: translateZ(0) !important; -webkit-transform: translateZ(0) !important; backface-visibility: hidden !important; -webkit-backface-visibility: hidden !important; will-change: transform !important; }';
-                    (document.head || document.documentElement).appendChild(style);
-                }
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(cssJs, null)
-    }
-
     private fun initializeWebRtc() {
         val listener = object : WebRTCManager.WebRTCListener {
             override fun onLocalDescription(sdp: SessionDescription) {
@@ -428,6 +435,10 @@ class MainActivity : AppCompatActivity() {
             onSendOffer = { offerSdp -> webRtcManager?.handleRemoteOffer(offerSdp) },
             onSendIceCandidate = { mid, index, candidate ->
                 webRtcManager?.addRemoteIceCandidate(mid, index, candidate)
+            },
+            onForceRestart = {
+                Log.w(TAG, "Force restart triggered by WebView JS. Executing hard process kill.")
+                hardRestartApp()
             }
         )
 
@@ -435,7 +446,19 @@ class MainActivity : AppCompatActivity() {
         myWeb.addJavascriptInterface(webRtcBridge!!, "AndroidBridge") // Backward compatibility
     }
 
-    private var isScreenCaptureIntentLaunched = false
+    private fun hardRestartApp() {
+        try {
+            val restartIntent = Intent(this, MainActivity::class.java)
+            restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            startActivity(restartIntent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error launching restart intent: ${e.message}")
+        }
+        
+        // Force kill the JVM process to absolutely clear wedged Chromium/WebRTC C++ memory.
+        // As the Home Launcher, Android ActivityManager will instantly respawn it cleanly.
+        Runtime.getRuntime().exit(0)
+    }
 
     private fun requestScreenCaptureConsent() {
         if (webRtcManager?.isScreenCapturing() == true) {
@@ -459,15 +482,6 @@ class MainActivity : AppCompatActivity() {
             projectionManager.createScreenCaptureIntent()
         }
 
-        // Temporarily suspend LockTask mode so the system permission dialog can appear over Kiosk Mode
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                stopLockTask()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not suspend LockTask mode: ${e.message}")
-        }
-
         screenCaptureLauncher.launch(consentIntent)
     }
 
@@ -478,14 +492,12 @@ class MainActivity : AppCompatActivity() {
         webRtcBridge?.sendStateToJs("STOPPED")
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun setupTwoFingerRefresh() {
-        val gestureDetector = TwoFingerRefreshGesture(this, myWeb) {
+        twoFingerGesture = TwoFingerRefreshGesture(this, myWeb) {
             refreshProgressBar.visibility = View.VISIBLE
             Toast.makeText(this, "Refreshing...", Toast.LENGTH_SHORT).show()
             myWeb.reload()
         }
-        myWeb.setOnTouchListener(gestureDetector)
     }
 
     private fun injectDeviceIdIfNeeded(url: String) {
@@ -545,16 +557,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startKioskMode() {
         hideSystemBars()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            if (activityManager.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_NONE) {
-                try {
-                    startLockTask()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not start lock task mode: ${e.message}")
-                }
-            }
-        }
     }
 
     override fun onResume() {

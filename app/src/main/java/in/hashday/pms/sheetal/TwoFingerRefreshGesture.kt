@@ -7,7 +7,6 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import android.view.MotionEvent
-import android.view.View
 import android.webkit.WebView
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -16,8 +15,7 @@ class TwoFingerRefreshGesture(
     private val context: Context,
     private val webView: WebView,
     private val onRefreshTriggered: () -> Unit
-) : View.OnTouchListener {
-
+) {
     private var initialY1 = 0f
     private var initialY2 = 0f
     private var initialX1 = 0f
@@ -28,12 +26,11 @@ class TwoFingerRefreshGesture(
     private var hasTriggeredInCurrentGesture = false
 
     private val density = context.resources.displayMetrics.density
-    private val minTriggerDistance = 180f * density // 180 dp downward movement
-    private val maxPinchDistanceChange = 50f * density // max finger distance delta before treating as pinch-zoom
+    private val minTriggerDistance = 180f * density 
+    private val maxPinchDistanceChange = 50f * density 
 
-    override fun onTouch(v: View?, event: MotionEvent?): Boolean {
-        if (event == null) return false
-
+    // HARD REQUIREMENT 2: Passive observation only, no boolean return.
+    fun observe(event: MotionEvent) {
         when (event.actionMasked) {
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount == 2) {
@@ -60,7 +57,7 @@ class TwoFingerRefreshGesture(
                 if (isGestureActive && event.pointerCount == 2 && !hasTriggeredInCurrentGesture) {
                     if (webView.scrollY > 0) {
                         isGestureActive = false
-                        return false
+                        return
                     }
 
                     val currentX1 = event.getX(0)
@@ -73,12 +70,10 @@ class TwoFingerRefreshGesture(
                         (currentY2 - currentY1).toDouble()
                     ).toFloat()
 
-                    // Pinch-to-zoom check: finger spacing changed significantly
                     val distanceChange = abs(currentDistance - initialDistance)
                     if (distanceChange > maxPinchDistanceChange) {
-                        // Accidental gesture during zoom / image view pinch
                         isGestureActive = false
-                        return false
+                        return
                     }
 
                     val deltaY1 = currentY1 - initialY1
@@ -89,14 +84,12 @@ class TwoFingerRefreshGesture(
                     val deltaX2 = currentX2 - initialX2
                     val avgDeltaX = (deltaX1 + deltaX2) / 2f
 
-                    // Both fingers moving downward together, vertical movement dominates horizontal
                     if (deltaY1 > 0 && deltaY2 > 0 && avgDeltaY > minTriggerDistance && avgDeltaY > (2.0f * abs(avgDeltaX))) {
                         hasTriggeredInCurrentGesture = true
                         isGestureActive = false
 
                         provideHapticFeedback()
                         onRefreshTriggered()
-                        return true
                     }
                 }
             }
@@ -107,9 +100,6 @@ class TwoFingerRefreshGesture(
                 }
             }
         }
-
-        // Return false to let standard WebView events proceed (normal scrolling, links, pinch zoom)
-        return false
     }
 
     private fun provideHapticFeedback() {

@@ -8,15 +8,13 @@
     android:fitsSystemWindows="false"
     tools:context=".MainActivity">
 
-    <!-- WebView taking full layout space -->
+    <!-- HARD REQUIREMENT 1: Remove fitsSystemWindows="false" from WebView so it doesn't fight padding -->
     <WebView
         android:id="@+id/myWeb"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@android:color/white"
-        android:fitsSystemWindows="false" />
+        android:background="@android:color/white" />
 
-    <!-- Progress bar at top for loading and two-finger refresh indicator -->
     <ProgressBar
         android:id="@+id/refreshProgressBar"
         style="?android:attr/progressBarStyleHorizontal"
