@@ -447,16 +447,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hardRestartApp() {
+        Log.w(TAG, "Initiating hard process restart via AlarmManager...")
         try {
             val restartIntent = Intent(this, MainActivity::class.java)
             restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            startActivity(restartIntent)
+            
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                this, 
+                12345, 
+                restartIntent, 
+                android.app.PendingIntent.FLAG_CANCEL_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.set(
+                android.app.AlarmManager.RTC, 
+                System.currentTimeMillis() + 500, 
+                pendingIntent
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Error launching restart intent: ${e.message}")
+            Log.e(TAG, "Error scheduling restart intent: ${e.message}")
         }
         
-        // Force kill the JVM process to absolutely clear wedged Chromium/WebRTC C++ memory.
-        // As the Home Launcher, Android ActivityManager will instantly respawn it cleanly.
+        // Terminate process safely after scheduling the intent
+        finishAffinity()
         Runtime.getRuntime().exit(0)
     }
 
@@ -610,8 +624,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        stopScreenCaptureSession()
         webRtcManager?.destroy()
-        ScreenCaptureService.stopService(this)
+        
+        // Safely destroy WebView to prevent native memory leaks during standard lifecycle events.
+        // NOTE: We DO NOT clear cookies/storage here. The web app strictly relies on persistent
+        // cookies (TAB_USERID, TERMINAL_ID, etc.) to maintain session state across reboots.
+        myWeb.let {
+            it.clearHistory()
+            // clearCache(false) clears RAM cache but leaves disk cache and cookies intact.
+            it.clearCache(false)
+            it.loadUrl("about:blank")
+            it.onPause()
+            it.removeAllViews()
+            it.destroy()
+        }
         super.onDestroy()
     }
 }

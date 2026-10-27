@@ -24,6 +24,7 @@ class TwoFingerRefreshGesture(
 
     private var isGestureActive = false
     private var hasTriggeredInCurrentGesture = false
+    private var pendingRefresh = false
 
     private val density = context.resources.displayMetrics.density
     private val minTriggerDistance = 180f * density 
@@ -47,6 +48,7 @@ class TwoFingerRefreshGesture(
 
                         isGestureActive = true
                         hasTriggeredInCurrentGesture = false
+                        pendingRefresh = false
                     }
                 } else {
                     isGestureActive = false
@@ -87,9 +89,9 @@ class TwoFingerRefreshGesture(
                     if (deltaY1 > 0 && deltaY2 > 0 && avgDeltaY > minTriggerDistance && avgDeltaY > (2.0f * abs(avgDeltaX))) {
                         hasTriggeredInCurrentGesture = true
                         isGestureActive = false
+                        pendingRefresh = true // Queue the refresh instead of firing mid-gesture
 
                         provideHapticFeedback()
-                        onRefreshTriggered()
                     }
                 }
             }
@@ -97,6 +99,16 @@ class TwoFingerRefreshGesture(
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (event.pointerCount <= 2) {
                     isGestureActive = false
+                }
+                
+                // CRITICAL FIX: Only trigger the reload when fingers are lifted.
+                // Reloading Chromium during an active ACTION_MOVE event tears down the compositor 
+                // while the touch stream is active, permanently wedging the scroll/pinch gesture recognizer.
+                if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    if (pendingRefresh) {
+                        pendingRefresh = false
+                        onRefreshTriggered()
+                    }
                 }
             }
         }
