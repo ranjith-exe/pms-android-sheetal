@@ -38,7 +38,7 @@
         android:supportsRtl="true"
         tools:targetApi="34">
 
-        <!-- Main Activity: singleInstance to ensure only one instance and WebView exist -->
+        <!-- Main Activity: singleTask to ensure only one instance and WebView exist -->
         <activity
             android:name="in.hashday.pms.sheetal.MainActivity"
             android:clearTaskOnLaunch="false"
@@ -46,15 +46,13 @@
             android:exported="true"
             android:hardwareAccelerated="true"
             android:label="@string/app_name"
-            android:launchMode="singleInstance"
+            android:launchMode="singleTask"
             android:theme="@style/AppTheme.NoActionBar"
             android:windowSoftInputMode="adjustResize">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.HOME" />
-                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

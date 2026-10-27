@@ -304,8 +304,11 @@ class MainActivity : AppCompatActivity() {
                 view: WebView,
                 detail: android.webkit.RenderProcessGoneDetail
             ): Boolean {
-                Log.e(TAG, "WebView Renderer crashed! (OOM or WebGL issue). Forcing hard process restart...")
-                hardRestartApp()
+                Log.e(TAG, "WebView Renderer crashed! (OOM or WebGL issue). Restarting Activity safely.")
+                val restartIntent = Intent(this@MainActivity, MainActivity::class.java)
+                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                startActivity(restartIntent)
+                finish()
                 return true
             }
 
@@ -437,41 +440,16 @@ class MainActivity : AppCompatActivity() {
                 webRtcManager?.addRemoteIceCandidate(mid, index, candidate)
             },
             onForceRestart = {
-                Log.w(TAG, "Force restart triggered by WebView JS. Executing hard process kill.")
-                hardRestartApp()
+                Log.w(TAG, "Force restart triggered by WebView JS. Restarting activity safely.")
+                val restartIntent = Intent(this@MainActivity, MainActivity::class.java)
+                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                startActivity(restartIntent)
+                finish()
             }
         )
 
         myWeb.addJavascriptInterface(webRtcBridge!!, WebRTCBridge.JS_INTERFACE_NAME)
         myWeb.addJavascriptInterface(webRtcBridge!!, "AndroidBridge") // Backward compatibility
-    }
-
-    private fun hardRestartApp() {
-        Log.w(TAG, "Initiating hard process restart via AlarmManager...")
-        try {
-            val restartIntent = Intent(this, MainActivity::class.java)
-            restartIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            
-            val pendingIntent = android.app.PendingIntent.getActivity(
-                this, 
-                12345, 
-                restartIntent, 
-                android.app.PendingIntent.FLAG_CANCEL_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-            )
-            
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            alarmManager.set(
-                android.app.AlarmManager.RTC, 
-                System.currentTimeMillis() + 500, 
-                pendingIntent
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error scheduling restart intent: ${e.message}")
-        }
-        
-        // Terminate process safely after scheduling the intent
-        finishAffinity()
-        Runtime.getRuntime().exit(0)
     }
 
     private fun requestScreenCaptureConsent() {
@@ -575,7 +553,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        try {
+            myWeb.onResume()
+            myWeb.resumeTimers()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onResume for WebView: ${e.message}")
+        }
         hideSystemBars()
+    }
+
+    override fun onPause() {
+        try {
+            myWeb.onPause()
+            myWeb.pauseTimers()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in onPause for WebView: ${e.message}")
+        }
+        super.onPause()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
