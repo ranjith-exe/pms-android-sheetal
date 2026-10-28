@@ -319,6 +319,8 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView, url: String) {
                 refreshProgressBar.visibility = View.GONE
                 injectDeviceIdIfNeeded(url)
+                // Force flush cookies to disk immediately after page finishes loading
+                CookieManager.getInstance().flush()
             }
 
             override fun onReceivedError(view: WebView, errorCode: Int, description: String, failingUrl: String) {
@@ -569,7 +571,15 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "Error in onPause for WebView: ${e.message}")
         }
+        // Force flush cookies to disk immediately when the app goes into the background
+        CookieManager.getInstance().flush()
         super.onPause()
+    }
+
+    override fun onStop() {
+        // Guarantee cookies are written to disk if the activity is completely stopped
+        CookieManager.getInstance().flush()
+        super.onStop()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -621,6 +631,9 @@ class MainActivity : AppCompatActivity() {
         stopScreenCaptureSession()
         webRtcManager?.destroy()
         
+        // Force flush cookies one final time during lifecycle destruction
+        CookieManager.getInstance().flush()
+
         // Safely destroy WebView to prevent native memory leaks during standard lifecycle events.
         // NOTE: We DO NOT clear cookies/storage here. The web app strictly relies on persistent
         // cookies (TAB_USERID, TERMINAL_ID, etc.) to maintain session state across reboots.
